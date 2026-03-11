@@ -96,5 +96,3 @@ jobs:
       - name: Build native addon
         run: npm run build:addon
 
-      - name: Run LAPACK tests
-        run: npm run test:lapack

@@ -29,11 +29,8 @@ export default defineConfig({
   },
   test: {
     exclude: [
-      // Native addon tests require `npm run build:addon` and are run separately
-      // via `npm run test:lapack`
       "**/node_modules/**",
-      "**/dist/**",
-      "**/__tests__/native/**",
+      "**/dist/**"
     ],
   },
 });
