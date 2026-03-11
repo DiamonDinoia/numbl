@@ -1,0 +1,8 @@
+dist
+dist-cli
+node_modules
+coverage
+*.min.js
+*.bundle.js
+build
+.cache

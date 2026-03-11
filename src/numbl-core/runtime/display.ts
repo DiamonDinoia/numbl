@@ -1,0 +1,202 @@
+/**
+ * Value display/formatting.
+ */
+
+import {
+  type RuntimeCell,
+  type RuntimeClassInstance,
+  type RuntimeStruct,
+  type RuntimeTensor,
+  type RuntimeValue,
+  isRuntimeChar,
+  isRuntimeLogical,
+  isRuntimeNumber,
+  isRuntimeString,
+  RuntimeStructArray,
+} from "./types.js";
+import { colMajorIndex, ind2sub } from "./utils.js";
+
+/** Format a value for display */
+export function displayValue(v: RuntimeValue): string {
+  if (isRuntimeNumber(v)) {
+    return formatNumber(v);
+  }
+  if (isRuntimeString(v)) {
+    return v;
+  }
+  if (isRuntimeLogical(v)) {
+    return v ? "1" : "0";
+  }
+  switch (v.kind) {
+    case "char": {
+      if (v.shape && v.shape[0] > 1) {
+        // Multi-row char array: split into rows of shape[1] chars
+        const rowWidth = v.shape[1];
+        const rows: string[] = [];
+        for (let r = 0; r < v.shape[0]; r++) {
+          rows.push(v.value.slice(r * rowWidth, (r + 1) * rowWidth));
+        }
+        return rows.join("\n");
+      }
+      return v.value;
+    }
+    case "tensor":
+      return formatTensor(v);
+    case "cell":
+      return formatCell(v);
+    case "struct":
+      return formatStruct(v);
+    case "function":
+      return `@${v.name}`;
+    case "class_instance":
+      return formatClassInstance(v);
+    case "complex_number":
+      return formatComplex(v.re, v.im);
+    case "dummy_handle":
+      return "[dummy_handle]";
+    case "struct_array":
+      return formatStructArray(v);
+  }
+}
+
+const formatStructArray = (v: RuntimeStructArray): string => {
+  const elements = v.elements;
+  const fieldNames = v.fieldNames;
+  const formattedElements = elements
+    .map((element, index) => {
+      const elementStr = fieldNames
+        .map(fieldName => {
+          const fieldValue = element.fields.get(fieldName);
+          if (fieldValue == undefined) return `${fieldName}: <undefined>`;
+          return `${fieldName}: ${displayValue(fieldValue)}`;
+        })
+        .join("\n");
+      return `  ${index + 1}: [${elementStr}]`;
+    })
+    .join("\n");
+
+  return `struct array with fields:\n${fieldNames.join("\n")}\n\n${formattedElements}`;
+};
+
+function formatComplex(re: number, im: number): string {
+  if (im === 0) return formatNumber(re);
+  if (re === 0) return `${formatNumber(im)}i`;
+  if (im < 0) return `${formatNumber(re)} - ${formatNumber(-im)}i`;
+  return `${formatNumber(re)} + ${formatNumber(im)}i`;
+}
+
+function formatNumber(n: number): string {
+  if (Number.isInteger(n) && Math.abs(n) < 1e15) {
+    return n.toString();
+  }
+  // 4 decimal places for most numbers
+  const s = n.toPrecision(5);
+  // Remove trailing zeros after decimal
+  if (s.includes(".")) {
+    return s.replace(/\.?0+$/, "") || "0";
+  }
+  return s;
+}
+
+function formatTensor(t: RuntimeTensor): string {
+  if (t.data.length === 0) {
+    return "[]";
+  }
+  const shape = t.shape;
+  const rows = shape.length >= 1 ? shape[0] : 1;
+  const cols = shape.length >= 2 ? shape[1] : 1;
+  const isComplex = t.imag !== undefined;
+
+  if (t.data.length === 1) {
+    if (isComplex) {
+      return formatComplex(t.data[0], t.imag![0]);
+    }
+    return formatNumber(t.data[0]);
+  }
+
+  // For 2D tensors (or fewer), display as a single matrix
+  if (shape.length <= 2) {
+    return format2DSlice(t.data, t.imag, rows, cols, isComplex);
+  }
+
+  // For 3D+ tensors, display page-by-page
+  const higherDims = shape.slice(2);
+  const pageSize = rows * cols;
+  const numPages = higherDims.reduce((a, b) => a * b, 1);
+  const lines: string[] = [];
+
+  for (let p = 0; p < numPages; p++) {
+    // Compute the higher-dim subscripts for this page
+    const pageSubs = ind2sub(higherDims, p);
+    const label = pageSubs.map(s => s + 1).join(",");
+    if (lines.length > 0) lines.push("");
+    lines.push(`(:,:,${label}) =\n`);
+
+    // Extract this page's data
+    const baseOffset = p * pageSize;
+    const pageData = t.data.slice(baseOffset, baseOffset + pageSize);
+    const pageImag = t.imag
+      ? t.imag.slice(baseOffset, baseOffset + pageSize)
+      : undefined;
+    lines.push(format2DSlice(pageData, pageImag, rows, cols, isComplex));
+  }
+
+  return lines.join("\n");
+}
+
+function format2DSlice(
+  data: ArrayLike<number>,
+  imag: ArrayLike<number> | undefined,
+  rows: number,
+  cols: number,
+  isComplex: boolean
+): string {
+  const lines: string[] = [];
+  const formatted: string[][] = [];
+  const colWidths: number[] = new Array(cols).fill(0);
+
+  for (let r = 0; r < rows; r++) {
+    const row: string[] = [];
+    for (let c = 0; c < cols; c++) {
+      const idx = colMajorIndex(r, c, rows);
+      const s = isComplex
+        ? formatComplex(data[idx], imag![idx])
+        : formatNumber(data[idx]);
+      row.push(s);
+      colWidths[c] = Math.max(colWidths[c], s.length);
+    }
+    formatted.push(row);
+  }
+
+  for (let r = 0; r < rows; r++) {
+    const parts = formatted[r].map((s, c) => s.padStart(colWidths[c]));
+    lines.push("   " + parts.join("   "));
+  }
+
+  return lines.join("\n");
+}
+
+function formatCell(c: RuntimeCell): string {
+  const parts = c.data.map(v => {
+    if (isRuntimeChar(v)) return `'${v.value}'`;
+    if (isRuntimeString(v)) return `"${v}"`;
+    return displayValue(v);
+  });
+  return `{${parts.join(", ")}}`;
+}
+
+function formatStruct(s: RuntimeStruct): string {
+  const lines: string[] = [];
+  for (const [key, val] of s.fields) {
+    lines.push(`    ${key}: ${displayValue(val)}`);
+  }
+  return lines.join("\n");
+}
+
+function formatClassInstance(v: RuntimeClassInstance): string {
+  const lines: string[] = [`  ${v.className} with properties:\n`];
+  for (const [key, val] of v.fields) {
+    lines.push(`    ${key}: ${displayValue(val)}`);
+  }
+  return lines.join("\n");
+}

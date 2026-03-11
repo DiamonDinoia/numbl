@@ -1,0 +1,26 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="90" fill="#64748b" opacity="0.1"/>
+
+  <!-- Matrix brackets (left and right) -->
+  <g stroke="#64748b" stroke-width="4" fill="none" stroke-linecap="round">
+    <!-- Left bracket -->
+    <path d="M 50 60 L 40 60 L 40 140 L 50 140"/>
+    <!-- Right bracket -->
+    <path d="M 150 60 L 160 60 L 160 140 L 150 140"/>
+  </g>
+
+  <!-- Matrix elements (stylized dots) -->
+  <g fill="#64748b">
+    <circle cx="70" cy="80" r="6"/>
+    <circle cx="100" cy="80" r="6"/>
+    <circle cx="130" cy="80" r="6"/>
+
+    <circle cx="70" cy="110" r="6"/>
+    <circle cx="100" cy="110" r="6"/>
+    <circle cx="130" cy="110" r="6"/>
+  </g>
+
+  <!-- Text: "Numbl" -->
+  <text x="100" y="175" font-family="sans-serif" font-size="32" font-weight="700" fill="#475569" text-anchor="middle">Numbl</text>
+</svg>

@@ -1,0 +1,938 @@
+/**
+ * Utilities for parsing plot() arguments at runtime.
+ *
+ * Handles: plot(Y), plot(X,Y), plot(X1,Y1,...,Xn,Yn),
+ * plot(X1,Y1,LineSpec1,...), and Name-Value pairs like 'Color','r','LineWidth',2.
+ */
+
+import {
+  type RuntimeValue,
+  type RuntimeTensor,
+  isRuntimeTensor,
+  isRuntimeNumber,
+  isRuntimeLogical,
+  isRuntimeString,
+  isRuntimeChar,
+} from "./types.js";
+import { toNumber, toString } from "./convert.js";
+
+// ── PlotTrace type ──────────────────────────────────────────────────────
+
+export interface PlotTrace {
+  x: number[];
+  y: number[];
+  lineStyle?: string;
+  marker?: string;
+  color?: [number, number, number];
+  lineWidth?: number;
+  markerSize?: number;
+  markerEdgeColor?: [number, number, number];
+  markerFaceColor?: [number, number, number];
+  markerIndices?: number[];
+}
+
+// ── Plot3Trace type ─────────────────────────────────────────────────────
+
+export interface Plot3Trace {
+  x: number[];
+  y: number[];
+  z: number[];
+  lineStyle?: string;
+  marker?: string;
+  color?: [number, number, number];
+  lineWidth?: number;
+  markerSize?: number;
+  markerEdgeColor?: [number, number, number];
+  markerFaceColor?: [number, number, number];
+  markerIndices?: number[];
+}
+
+// ── SurfTrace type ──────────────────────────────────────────────────────
+
+export interface SurfTrace {
+  /** X coordinates: flat array of length rows*cols (column-major) */
+  x: number[];
+  /** Y coordinates: flat array of length rows*cols (column-major) */
+  y: number[];
+  /** Z values: flat array of length rows*cols (column-major) */
+  z: number[];
+  /** Number of rows in the grid */
+  rows: number;
+  /** Number of columns in the grid */
+  cols: number;
+  /** Optional color data (same shape as Z) */
+  c?: number[];
+  edgeColor?: [number, number, number] | "none" | "flat" | "interp";
+  faceColor?:
+    | [number, number, number]
+    | "flat"
+    | "interp"
+    | "none"
+    | "texturemap";
+  faceAlpha?: number;
+}
+
+// ── Color mapping ───────────────────────────────────────────────────────
+
+const COLOR_SHORT: Record<string, [number, number, number]> = {
+  r: [1, 0, 0],
+  g: [0, 1, 0],
+  b: [0, 0, 1],
+  c: [0, 1, 1],
+  m: [1, 0, 1],
+  y: [1, 1, 0],
+  k: [0, 0, 0],
+  w: [1, 1, 1],
+};
+
+const COLOR_NAMES: Record<string, [number, number, number]> = {
+  red: [1, 0, 0],
+  green: [0, 1, 0],
+  blue: [0, 0, 1],
+  cyan: [0, 1, 1],
+  magenta: [1, 0, 1],
+  yellow: [1, 1, 0],
+  black: [0, 0, 0],
+  white: [1, 1, 1],
+};
+
+export function resolveColor(
+  v: RuntimeValue | string
+): [number, number, number] | undefined {
+  if (typeof v === "string") {
+    const lower = v.toLowerCase();
+    if (COLOR_SHORT[lower]) return COLOR_SHORT[lower];
+    if (COLOR_NAMES[lower]) return COLOR_NAMES[lower];
+    return undefined;
+  }
+  if (isRuntimeString(v) || isRuntimeChar(v)) {
+    return resolveColor(isRuntimeString(v) ? v : v.value);
+  }
+  if (isRuntimeTensor(v) && v.data.length === 3) {
+    return [v.data[0], v.data[1], v.data[2]];
+  }
+  return undefined;
+}
+
+// ── LineSpec parser ─────────────────────────────────────────────────────
+
+const COLOR_CHARS = new Set(["r", "g", "b", "c", "m", "y", "k", "w"]);
+const MARKER_CHARS = new Set([
+  "o",
+  "+",
+  "*",
+  ".",
+  "x",
+  "_",
+  "|",
+  "s",
+  "d",
+  "^",
+  "v",
+  "<",
+  ">",
+  "p",
+  "h",
+]);
+
+export interface ParsedLineSpec {
+  color?: string;
+  lineStyle?: string;
+  marker?: string;
+}
+
+export function parseLineSpec(s: string): ParsedLineSpec | null {
+  const result: ParsedLineSpec = {};
+  let pos = 0;
+
+  while (pos < s.length) {
+    // Try two-char line styles first
+    if (pos + 1 < s.length) {
+      const two = s.slice(pos, pos + 2);
+      if (two === "--" || two === "-.") {
+        if (result.lineStyle !== undefined) return null;
+        result.lineStyle = two;
+        pos += 2;
+        continue;
+      }
+    }
+
+    const ch = s[pos];
+
+    // Single-char line style: '-' or ':'
+    if (ch === "-" || ch === ":") {
+      if (result.lineStyle !== undefined) return null;
+      result.lineStyle = ch;
+      pos++;
+      continue;
+    }
+
+    // Color
+    if (COLOR_CHARS.has(ch)) {
+      if (result.color !== undefined) return null;
+      result.color = ch;
+      pos++;
+      continue;
+    }
+
+    // Marker
+    if (MARKER_CHARS.has(ch)) {
+      // '.' could be ambiguous but since we checked '-.' above, standalone '.' is a marker
+      if (result.marker !== undefined) return null;
+      result.marker = ch;
+      pos++;
+      continue;
+    }
+
+    // Unrecognized character → not a LineSpec
+    return null;
+  }
+
+  // Must have matched at least one thing
+  if (
+    result.color === undefined &&
+    result.lineStyle === undefined &&
+    result.marker === undefined
+  )
+    return null;
+
+  return result;
+}
+
+// ── Name-Value key detection ────────────────────────────────────────────
+
+const NAME_VALUE_KEYS = new Set([
+  "color",
+  "linestyle",
+  "linewidth",
+  "marker",
+  "markersize",
+  "markeredgecolor",
+  "markerfacecolor",
+  "markerindices",
+]);
+
+function isNameValueKey(v: RuntimeValue): string | null {
+  if (!isRuntimeString(v) && !isRuntimeChar(v)) return null;
+  const lower = isRuntimeString(v)
+    ? v.toLocaleLowerCase()
+    : v.value.toLowerCase();
+  if (NAME_VALUE_KEYS.has(lower)) return lower;
+  return null;
+}
+
+// ── Numeric data helpers ────────────────────────────────────────────────
+
+function isNumericArg(v: unknown): boolean {
+  if (typeof v === "number") return true;
+  if (typeof v === "boolean") return true;
+  if (v && typeof v === "object" && "kind" in v) {
+    const mv = v as RuntimeValue;
+    return isRuntimeNumber(mv) || isRuntimeTensor(mv) || isRuntimeLogical(mv);
+  }
+  return false;
+}
+
+function isStringArg(v: unknown): boolean {
+  if (typeof v === "string") return true;
+  if (v && typeof v === "object" && "kind" in v) {
+    const mv = v as RuntimeValue;
+    return isRuntimeString(mv) || isRuntimeChar(mv);
+  }
+  return false;
+}
+
+function getStringValue(v: RuntimeValue): string {
+  if (isRuntimeString(v)) return v;
+  if (isRuntimeChar(v)) return v.value;
+  return toString(v);
+}
+
+/** Convert runtime value to a flat number array */
+function toNumberArray(v: RuntimeValue): number[] {
+  if (isRuntimeNumber(v)) return [v];
+  if (isRuntimeTensor(v)) return Array.from(v.data);
+  if (isRuntimeLogical(v)) return [v ? 1 : 0];
+  return [0];
+}
+
+/** Extract column j from a column-major tensor with shape [m, n] */
+function tensorColumn(tensor: RuntimeTensor, col: number): number[] {
+  const m = tensor.shape[0];
+  const offset = col * m;
+  const result = new Array(m);
+  for (let i = 0; i < m; i++) {
+    result[i] = tensor.data[offset + i];
+  }
+  return result;
+}
+
+/**
+ * Get the number of columns of a numeric value for matrix splitting.
+ * Only returns > 1 for true matrices (nRows > 1 && nCols > 1).
+ * Row vectors (1×N) and column vectors (N×1) return 1.
+ */
+function numColumns(v: RuntimeValue): number {
+  if (
+    isRuntimeTensor(v) &&
+    v.shape.length >= 2 &&
+    v.shape[0] > 1 &&
+    v.shape[1] > 1
+  )
+    return v.shape[1];
+  return 1;
+}
+
+/** Generate 1-based index array [1, 2, ..., n] */
+function oneBasedIndices(n: number): number[] {
+  const arr = new Array(n);
+  for (let i = 0; i < n; i++) arr[i] = i + 1;
+  return arr;
+}
+
+/**
+ * Expand a numeric value into column-wise traces.
+ * For a vector (row or column), returns one array.
+ * For an m×n matrix (m>1, n>1), returns n arrays (one per column).
+ */
+function expandColumns(v: RuntimeValue): number[][] {
+  if (
+    isRuntimeTensor(v) &&
+    v.shape.length >= 2 &&
+    v.shape[0] > 1 &&
+    v.shape[1] > 1
+  ) {
+    const cols: number[][] = [];
+    for (let j = 0; j < v.shape[1]; j++) {
+      cols.push(tensorColumn(v, j));
+    }
+    return cols;
+  }
+  // Scalar or vector — single column
+  return [toNumberArray(v)];
+}
+
+// ── Main argument parser ────────────────────────────────────────────────
+
+export function parsePlotArgs(args: RuntimeValue[]): PlotTrace[] {
+  const traces: PlotTrace[] = [];
+  let pos = 0;
+
+  // First pass: collect X-Y pairs with optional LineSpec
+  while (pos < args.length) {
+    // Check if we've hit Name-Value pairs
+    if (isStringArg(args[pos]) && isNameValueKey(args[pos])) {
+      break;
+    }
+
+    // Must have at least one numeric arg
+    if (!isNumericArg(args[pos])) {
+      // Unexpected string that's not a Name-Value key — try as LineSpec for previous traces
+      if (isStringArg(args[pos]) && traces.length > 0) {
+        const spec = parseLineSpec(getStringValue(args[pos]));
+        if (spec) {
+          // This shouldn't normally happen here, but handle gracefully
+          pos++;
+          continue;
+        }
+      }
+      break;
+    }
+
+    const first = args[pos];
+    pos++;
+
+    // Check if next arg is numeric (making this an X-Y pair)
+    // or if next arg is a string (making 'first' a Y-only value)
+    let second: RuntimeValue | undefined = undefined;
+
+    if (pos < args.length && isNumericArg(args[pos])) {
+      // Could be X,Y pair OR this 'first' might be Y-only followed by another Y
+      // Peek ahead: if after consuming second we see a LineSpec or Name-Value or end,
+      // then first=X, second=Y. If we see another numeric, it's also X-Y pair pattern.
+      second = args[pos];
+      pos++;
+    }
+
+    let lineSpec: ParsedLineSpec | undefined;
+
+    // Check for LineSpec after the pair/single
+    if (
+      pos < args.length &&
+      isStringArg(args[pos]) &&
+      !isNameValueKey(args[pos])
+    ) {
+      const spec = parseLineSpec(getStringValue(args[pos]));
+      if (spec) {
+        lineSpec = spec;
+        pos++;
+      }
+    }
+
+    // Build traces from this group
+    if (second !== undefined) {
+      // X-Y pair
+      buildTracesFromXY(first, second, lineSpec, traces);
+    } else {
+      // Y-only
+      buildTracesFromY(first, lineSpec, traces);
+    }
+  }
+
+  // Second pass: apply Name-Value pairs to all traces
+  while (pos < args.length) {
+    const key = isNameValueKey(args[pos]);
+    if (!key) break;
+    pos++;
+    if (pos >= args.length) break;
+    const value = args[pos];
+    pos++;
+    applyNameValue(traces, key, value);
+  }
+
+  return traces;
+}
+
+function buildTracesFromY(
+  yVal: RuntimeValue,
+  lineSpec: ParsedLineSpec | undefined,
+  traces: PlotTrace[]
+): void {
+  const yCols = expandColumns(yVal);
+
+  for (const yData of yCols) {
+    const xData = oneBasedIndices(yData.length);
+    traces.push(makeTrace(xData, yData, lineSpec));
+  }
+}
+
+function buildTracesFromXY(
+  xVal: RuntimeValue,
+  yVal: RuntimeValue,
+  lineSpec: ParsedLineSpec | undefined,
+  traces: PlotTrace[]
+): void {
+  const xCols = numColumns(xVal);
+  const yCols = numColumns(yVal);
+
+  if (xCols === 1 && yCols === 1) {
+    // Simple vector-vector pair
+    traces.push(makeTrace(toNumberArray(xVal), toNumberArray(yVal), lineSpec));
+  } else if (xCols === 1 && yCols > 1) {
+    // Vector X, matrix Y → shared X, one trace per Y column
+    const xData = toNumberArray(xVal);
+    const yColumns = expandColumns(yVal);
+    for (const yData of yColumns) {
+      traces.push(makeTrace(xData, yData, lineSpec));
+    }
+  } else if (xCols > 1 && yCols > 1 && xCols === yCols) {
+    // Matrix X, matrix Y (same size) → pair columns
+    const xColumns = expandColumns(xVal);
+    const yColumns = expandColumns(yVal);
+    for (let i = 0; i < xCols; i++) {
+      traces.push(makeTrace(xColumns[i], yColumns[i], lineSpec));
+    }
+  } else {
+    // Fallback: flatten both
+    traces.push(makeTrace(toNumberArray(xVal), toNumberArray(yVal), lineSpec));
+  }
+}
+
+function makeTrace(
+  x: number[],
+  y: number[],
+  lineSpec: ParsedLineSpec | undefined
+): PlotTrace {
+  const trace: PlotTrace = { x, y };
+  if (lineSpec) {
+    if (lineSpec.color) {
+      trace.color = COLOR_SHORT[lineSpec.color];
+    }
+    if (lineSpec.lineStyle) {
+      trace.lineStyle = lineSpec.lineStyle;
+    }
+    if (lineSpec.marker) {
+      trace.marker = lineSpec.marker;
+      // If marker specified but no line style, show markers only
+      if (!lineSpec.lineStyle) {
+        trace.lineStyle = "none";
+      }
+    }
+  }
+  return trace;
+}
+
+// ── plot3 argument parser ────────────────────────────────────────────────
+
+/**
+ * Parse plot3() arguments.
+ *
+ * Supported forms:
+ *   plot3(X, Y, Z)
+ *   plot3(X, Y, Z, LineSpec)
+ *   plot3(X1,Y1,Z1,...,Xn,Yn,Zn)
+ *   plot3(X1,Y1,Z1,LineSpec1,...,Xn,Yn,Zn,LineSpecn)
+ *   plot3(..., Name, Value)
+ */
+export function parsePlot3Args(args: RuntimeValue[]): Plot3Trace[] {
+  const traces: Plot3Trace[] = [];
+  let pos = 0;
+
+  // First pass: collect X-Y-Z triplets with optional LineSpec
+  while (pos < args.length) {
+    // Check if we've hit Name-Value pairs
+    if (isStringArg(args[pos]) && isNameValueKey(args[pos])) {
+      break;
+    }
+
+    // Must have at least three numeric args for X, Y, Z
+    if (!isNumericArg(args[pos])) break;
+    if (pos + 1 >= args.length || !isNumericArg(args[pos + 1])) break;
+    if (pos + 2 >= args.length || !isNumericArg(args[pos + 2])) break;
+
+    const xVal = args[pos];
+    const yVal = args[pos + 1];
+    const zVal = args[pos + 2];
+    pos += 3;
+
+    let lineSpec: ParsedLineSpec | undefined;
+
+    // Check for LineSpec after the triplet
+    if (
+      pos < args.length &&
+      isStringArg(args[pos]) &&
+      !isNameValueKey(args[pos])
+    ) {
+      const spec = parseLineSpec(getStringValue(args[pos]));
+      if (spec) {
+        lineSpec = spec;
+        pos++;
+      }
+    }
+
+    // Build traces from this group (handle matrix expansion)
+    buildPlot3Traces(xVal, yVal, zVal, lineSpec, traces);
+  }
+
+  // Second pass: apply Name-Value pairs to all traces
+  while (pos < args.length) {
+    const key = isNameValueKey(args[pos]);
+    if (!key) break;
+    pos++;
+    if (pos >= args.length) break;
+    const value = args[pos];
+    pos++;
+    applyPlot3NameValue(traces, key, value);
+  }
+
+  return traces;
+}
+
+function buildPlot3Traces(
+  xVal: RuntimeValue,
+  yVal: RuntimeValue,
+  zVal: RuntimeValue,
+  lineSpec: ParsedLineSpec | undefined,
+  traces: Plot3Trace[]
+): void {
+  const xCols = numColumns(xVal);
+  const yCols = numColumns(yVal);
+  const zCols = numColumns(zVal);
+  const maxCols = Math.max(xCols, yCols, zCols);
+
+  if (maxCols === 1) {
+    // Simple vector-vector-vector
+    traces.push(
+      makePlot3Trace(
+        toNumberArray(xVal),
+        toNumberArray(yVal),
+        toNumberArray(zVal),
+        lineSpec
+      )
+    );
+  } else {
+    // At least one is a matrix — expand columns
+    const xColumns = expandColumns(xVal);
+    const yColumns = expandColumns(yVal);
+    const zColumns = expandColumns(zVal);
+    for (let i = 0; i < maxCols; i++) {
+      traces.push(
+        makePlot3Trace(
+          xColumns[Math.min(i, xColumns.length - 1)],
+          yColumns[Math.min(i, yColumns.length - 1)],
+          zColumns[Math.min(i, zColumns.length - 1)],
+          lineSpec
+        )
+      );
+    }
+  }
+}
+
+function makePlot3Trace(
+  x: number[],
+  y: number[],
+  z: number[],
+  lineSpec: ParsedLineSpec | undefined
+): Plot3Trace {
+  const trace: Plot3Trace = { x, y, z };
+  if (lineSpec) {
+    if (lineSpec.color) {
+      trace.color = COLOR_SHORT[lineSpec.color];
+    }
+    if (lineSpec.lineStyle) {
+      trace.lineStyle = lineSpec.lineStyle;
+    }
+    if (lineSpec.marker) {
+      trace.marker = lineSpec.marker;
+      if (!lineSpec.lineStyle) {
+        trace.lineStyle = "none";
+      }
+    }
+  }
+  return trace;
+}
+
+function applyPlot3NameValue(
+  traces: Plot3Trace[],
+  key: string,
+  value: RuntimeValue
+): void {
+  switch (key) {
+    case "color": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.color = c;
+      break;
+    }
+    case "linestyle": {
+      const s = getStringValue(value);
+      for (const t of traces) t.lineStyle = s;
+      break;
+    }
+    case "linewidth": {
+      const n = typeof value === "number" ? value : toNumber(value);
+      for (const t of traces) t.lineWidth = n;
+      break;
+    }
+    case "marker": {
+      const s = getStringValue(value);
+      for (const t of traces) t.marker = s === "none" ? undefined : s;
+      break;
+    }
+    case "markersize": {
+      const n = typeof value === "number" ? value : toNumber(value);
+      for (const t of traces) t.markerSize = n;
+      break;
+    }
+    case "markeredgecolor": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.markerEdgeColor = c;
+      break;
+    }
+    case "markerfacecolor": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.markerFaceColor = c;
+      break;
+    }
+    case "markerindices": {
+      const arr = toNumberArray(value);
+      for (const t of traces) t.markerIndices = arr;
+      break;
+    }
+  }
+}
+
+// ── Surf Name-Value key detection ────────────────────────────────────────
+
+const SURF_NAME_VALUE_KEYS = new Set(["edgecolor", "facecolor", "facealpha"]);
+
+function isSurfNameValueKey(v: RuntimeValue): string | null {
+  if (!isRuntimeString(v) && !isRuntimeChar(v)) return null;
+  const lower = isRuntimeString(v)
+    ? v.toLocaleLowerCase()
+    : v.value.toLowerCase();
+  if (SURF_NAME_VALUE_KEYS.has(lower)) return lower;
+  return null;
+}
+
+// ── Surf argument parser ────────────────────────────────────────────────
+
+/**
+ * Parse surf() arguments.
+ *
+ * Supported forms:
+ *   surf(Z)           — Z is m×n, X = 1:n, Y = 1:m
+ *   surf(Z, C)        — Z is m×n, C is m×n color data
+ *   surf(X, Y, Z)     — X, Y, Z are m×n matrices (or X is 1×n / Y is m×1)
+ *   surf(X, Y, Z, C)  — with explicit color data
+ *   surf(..., Name, Value) — name-value pairs
+ */
+export function parseSurfArgs(args: RuntimeValue[]): SurfTrace {
+  let pos = 0;
+
+  // Skip axes handle argument (not supported, but tolerate it)
+  // For simplicity, we assume all numeric args are data args
+
+  let xData: number[] | undefined;
+  let yData: number[] | undefined;
+  let zData: number[];
+  let rows: number;
+  let cols: number;
+  let cData: number[] | undefined;
+
+  // Count leading numeric args
+  let numericCount = 0;
+  for (let i = pos; i < args.length; i++) {
+    if (isNumericArg(args[i])) numericCount++;
+    else break;
+  }
+
+  if (numericCount === 1) {
+    // surf(Z)
+    const z = args[pos++];
+    const info = getMatrixInfo(z);
+    rows = info.rows;
+    cols = info.cols;
+    zData = info.data;
+    // Generate meshgrid: X = 1:cols, Y = 1:rows
+    const gen = generateMeshgrid(rows, cols);
+    xData = gen.x;
+    yData = gen.y;
+  } else if (numericCount === 2) {
+    // surf(Z, C)
+    const z = args[pos++];
+    const c = args[pos++];
+    const info = getMatrixInfo(z);
+    rows = info.rows;
+    cols = info.cols;
+    zData = info.data;
+    cData = toNumberArray(c);
+    const gen = generateMeshgrid(rows, cols);
+    xData = gen.x;
+    yData = gen.y;
+  } else if (numericCount === 3) {
+    // surf(X, Y, Z)
+    const x = args[pos++];
+    const y = args[pos++];
+    const z = args[pos++];
+    const zInfo = getMatrixInfo(z);
+    rows = zInfo.rows;
+    cols = zInfo.cols;
+    zData = zInfo.data;
+    const expanded = expandXY(x, y, rows, cols);
+    xData = expanded.x;
+    yData = expanded.y;
+  } else if (numericCount >= 4) {
+    // surf(X, Y, Z, C)
+    const x = args[pos++];
+    const y = args[pos++];
+    const z = args[pos++];
+    const c = args[pos++];
+    const zInfo = getMatrixInfo(z);
+    rows = zInfo.rows;
+    cols = zInfo.cols;
+    zData = zInfo.data;
+    cData = toNumberArray(c);
+    const expanded = expandXY(x, y, rows, cols);
+    xData = expanded.x;
+    yData = expanded.y;
+  } else {
+    throw new Error("surf requires at least one input argument");
+  }
+
+  const trace: SurfTrace = {
+    x: xData!,
+    y: yData!,
+    z: zData,
+    rows,
+    cols,
+  };
+  if (cData) trace.c = cData;
+
+  // Parse name-value pairs
+  while (pos < args.length) {
+    const key = isSurfNameValueKey(args[pos]);
+    if (!key) break;
+    pos++;
+    if (pos >= args.length) break;
+    const value = args[pos++];
+    applySurfNameValue(trace, key, value);
+  }
+
+  return trace;
+}
+
+function getMatrixInfo(v: RuntimeValue): {
+  data: number[];
+  rows: number;
+  cols: number;
+} {
+  if (isRuntimeTensor(v) && v.shape.length >= 2) {
+    return {
+      data: Array.from(v.data),
+      rows: v.shape[0],
+      cols: v.shape[1],
+    };
+  }
+  if (isRuntimeNumber(v)) {
+    return { data: [v], rows: 1, cols: 1 };
+  }
+  // Fallback: treat as column vector
+  const arr = toNumberArray(v);
+  return { data: arr, rows: arr.length, cols: 1 };
+}
+
+/** Generate meshgrid X and Y for a rows×cols grid: X = 1:cols, Y = 1:rows (column-major) */
+function generateMeshgrid(
+  rows: number,
+  cols: number
+): { x: number[]; y: number[] } {
+  const n = rows * cols;
+  const x = new Array(n);
+  const y = new Array(n);
+  for (let j = 0; j < cols; j++) {
+    for (let i = 0; i < rows; i++) {
+      const idx = j * rows + i; // column-major
+      x[idx] = j + 1;
+      y[idx] = i + 1;
+    }
+  }
+  return { x, y };
+}
+
+/**
+ * Expand X and Y to match the grid dimensions of Z.
+ * Handles:
+ *   - X and Y as full m×n matrices (pass through)
+ *   - X as 1×n row vector, Y as m×1 column vector (meshgrid expansion)
+ *   - X as n-element vector, Y as m-element vector (meshgrid expansion)
+ */
+function expandXY(
+  xVal: RuntimeValue,
+  yVal: RuntimeValue,
+  rows: number,
+  cols: number
+): { x: number[]; y: number[] } {
+  const xArr = toNumberArray(xVal);
+  const yArr = toNumberArray(yVal);
+  const n = rows * cols;
+
+  // If X and Y are already full matrices, use them directly
+  if (xArr.length === n && yArr.length === n) {
+    return { x: xArr, y: yArr };
+  }
+
+  // Meshgrid expansion: X has cols elements, Y has rows elements
+  const xVec = xArr.length === cols ? xArr : xArr.slice(0, cols);
+  const yVec = yArr.length === rows ? yArr : yArr.slice(0, rows);
+  const x = new Array(n);
+  const y = new Array(n);
+  for (let j = 0; j < cols; j++) {
+    for (let i = 0; i < rows; i++) {
+      const idx = j * rows + i; // column-major
+      x[idx] = xVec[j];
+      y[idx] = yVec[i];
+    }
+  }
+  return { x, y };
+}
+
+function applySurfNameValue(
+  trace: SurfTrace,
+  key: string,
+  value: RuntimeValue
+): void {
+  switch (key) {
+    case "edgecolor": {
+      const s = getStringValueIfString(value);
+      if (s !== undefined) {
+        const lower = s.toLowerCase();
+        if (lower === "none" || lower === "flat" || lower === "interp") {
+          trace.edgeColor = lower;
+          break;
+        }
+      }
+      const c = resolveColor(value);
+      if (c) trace.edgeColor = c;
+      break;
+    }
+    case "facecolor": {
+      const s = getStringValueIfString(value);
+      if (s !== undefined) {
+        const lower = s.toLowerCase();
+        if (
+          lower === "flat" ||
+          lower === "interp" ||
+          lower === "none" ||
+          lower === "texturemap"
+        ) {
+          trace.faceColor = lower;
+          break;
+        }
+      }
+      const c = resolveColor(value);
+      if (c) trace.faceColor = c;
+      break;
+    }
+    case "facealpha": {
+      const n = typeof value === "number" ? value : toNumber(value);
+      trace.faceAlpha = n;
+      break;
+    }
+  }
+}
+
+/** Get string value if the value is a string/char, otherwise undefined */
+function getStringValueIfString(v: RuntimeValue): string | undefined {
+  if (isRuntimeString(v)) return v;
+  if (isRuntimeChar(v)) return v.value;
+  return undefined;
+}
+
+function applyNameValue(
+  traces: PlotTrace[],
+  key: string,
+  value: RuntimeValue
+): void {
+  switch (key) {
+    case "color": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.color = c;
+      break;
+    }
+    case "linestyle": {
+      const s = getStringValue(value);
+      for (const t of traces) t.lineStyle = s;
+      break;
+    }
+    case "linewidth": {
+      const n = typeof value === "number" ? value : toNumber(value);
+      for (const t of traces) t.lineWidth = n;
+      break;
+    }
+    case "marker": {
+      const s = getStringValue(value);
+      for (const t of traces) t.marker = s === "none" ? undefined : s;
+      break;
+    }
+    case "markersize": {
+      const n = typeof value === "number" ? value : toNumber(value);
+      for (const t of traces) t.markerSize = n;
+      break;
+    }
+    case "markeredgecolor": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.markerEdgeColor = c;
+      break;
+    }
+    case "markerfacecolor": {
+      const c = resolveColor(value);
+      if (c) for (const t of traces) t.markerFaceColor = c;
+      break;
+    }
+    case "markerindices": {
+      const arr = toNumberArray(value);
+      for (const t of traces) t.markerIndices = arr;
+      break;
+    }
+  }
+}

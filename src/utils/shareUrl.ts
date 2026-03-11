@@ -1,0 +1,66 @@
+import pako from "pako";
+import type { WorkspaceFile } from "../hooks/useProjectFiles";
+
+export interface ShareData {
+  files: { name: string; content: string }[];
+  activeFileName: string | null;
+}
+
+export function encodeShareData(
+  files: WorkspaceFile[],
+  activeFileId: string
+): string {
+  const activeFile = files.find(f => f.id === activeFileId);
+  const data: ShareData = {
+    files: files.map(f => ({ name: f.name, content: f.content })),
+    activeFileName: activeFile?.name ?? null,
+  };
+
+  const json = JSON.stringify(data);
+  const compressed = pako.deflate(new TextEncoder().encode(json));
+
+  // Base64url encoding (no padding, URL-safe)
+  let base64 = btoa(String.fromCharCode(...compressed));
+  base64 = base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  return base64;
+}
+
+export function decodeShareData(encoded: string): ShareData {
+  // Base64url decoding
+  let base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  // Add padding
+  while (base64.length % 4) base64 += "=";
+
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  const decompressed = pako.inflate(bytes);
+  const json = new TextDecoder().decode(decompressed);
+  return JSON.parse(json);
+}
+
+export function shareDataToWorkspaceFiles(data: ShareData): {
+  files: WorkspaceFile[];
+  activeFileId: string;
+} {
+  const files: WorkspaceFile[] = data.files.map(f => ({
+    id: crypto.randomUUID(),
+    name: f.name,
+    content: f.content,
+  }));
+
+  let activeFileId = "";
+  if (data.activeFileName) {
+    const match = files.find(f => f.name === data.activeFileName);
+    if (match) activeFileId = match.id;
+  }
+  if (!activeFileId && files.length > 0) {
+    activeFileId = files[0].id;
+  }
+
+  return { files, activeFileId };
+}

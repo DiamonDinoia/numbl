@@ -1,0 +1,106 @@
+{
+  "name": "numbl",
+  "version": "0.0.12",
+  "description": "Run .m source files in the browser and on the command line by compiling to JavaScript",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magland/numbl.git"
+  },
+  "keywords": [
+    "compiler",
+    "javascript",
+    "browser",
+    "cli",
+    "numerical-computing"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "numbl": "dist-cli/cli.js"
+  },
+  "files": [
+    "dist-cli/",
+    "dist-plot-viewer/",
+    "native/",
+    "binding.gyp"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:web && npm run build:cli && npm run build:plot-viewer",
+    "build:plot-viewer": "vite build --config vite.plot-viewer.config.ts",
+    "bundle:stdlib": "tsx scripts/bundle-stdlib.ts",
+    "build:web": "npm run bundle:stdlib && tsc -b && vite build",
+    "build:cli": "npm run bundle:stdlib && esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=dist-cli/cli.js --packages=external --loader:.wasm=file",
+    "build:server": "esbuild server/execution-service.ts --bundle --platform=node --format=esm --outfile=server/dist/execution-service.js --packages=external",
+    "server:dev": "node --env-file=server/.env node_modules/.bin/tsx server/execution-service.ts",
+    "server:start": "node --env-file=server/.env server/dist/execution-service.js",
+    "install": "true",
+    "build:addon": "node-gyp rebuild",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "npm run test:float64",
+    "test:float32": "NUMBL_USE_FLOAT32=true vitest run",
+    "test:float64": "NUMBL_USE_FLOAT32=false vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:octave": "tsx test/octave-comparison.ts",
+    "test:lapack": "vitest run --config vitest.lapack.config.ts",
+    "test:scripts": "bash numbl_test_scripts/run_all.sh",
+    "prepublishOnly": "npm run build:cli && npm run build:plot-viewer",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "node-addon-api": "^8.3.0",
+    "pako": "^2.1.0",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@eslint/js": "^9.39.1",
+    "@monaco-editor/react": "^4.7.0",
+    "@mui/icons-material": "^7.3.7",
+    "@mui/material": "^7.3.7",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.10.1",
+    "@types/pako": "^2.0.4",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.183.1",
+    "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/coverage-v8": "^4.0.18",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "cors": "^2.8.5",
+    "dexie": "^4.3.0",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "express": "^4.21.2",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "node-gyp": "^11.2.0",
+    "prettier": "^3.8.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.13.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.4",
+    "vite-plugin-wasm": "^3.5.0",
+    "vitest": "^4.0.18"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,json,css,md}": "prettier --write"
+  }
+}
