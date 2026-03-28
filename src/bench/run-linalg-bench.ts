@@ -8,6 +8,7 @@ import {
   type LapackBridge,
 } from "../numbl-core/native/lapack-bridge.js";
 import { getTsLapackBridge } from "../numbl-core/native/ts-lapack-bridge.js";
+import { getFlameBridge } from "../flame-ts/bridge.js";
 import {
   buildScenarios,
   runAllScenarios,
@@ -28,8 +29,13 @@ const time = getArg("--time", 0);
 const backends: BenchBackend[] = [
   {
     id: "ts-lapack",
-    label: "TypeScript LAPACK (pure JS)",
+    label: "TypeScript LAPACK (unblocked, pure JS)",
     bridge: getTsLapackBridge(),
+  },
+  {
+    id: "flame-ts",
+    label: "FLAME TS (blocked BLIS/FLAME, pure JS)",
+    bridge: getFlameBridge(),
   },
 ];
 
