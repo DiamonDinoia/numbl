@@ -13,15 +13,23 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { BenchTimingResult } from "../bench/linalg-bench-core.js";
+import type { MatmulResult } from "../bench/matmul-bench-core.js";
 
-function formatMs(v: number): string {
+function fmtMs(v: number): string {
   if (v === 0) return "-";
-  return v >= 100 ? v.toFixed(1) : v.toFixed(3);
+  if (v >= 1000) return (v / 1000).toFixed(2) + "s";
+  if (v >= 100) return v.toFixed(1);
+  if (v >= 1) return v.toFixed(3);
+  return (v * 1000).toFixed(1) + "µs";
 }
 
-export function LinalgBenchPage() {
-  const [results, setResults] = useState<BenchTimingResult[]>([]);
+type BackendInfo = { id: string; label: string };
+type ScenarioInfo = { id: string; label: string };
+
+export function MatmulBenchPage() {
+  const [results, setResults] = useState<MatmulResult[]>([]);
+  const [backends, setBackends] = useState<BackendInfo[]>([]);
+  const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState("");
   const [warmup, setWarmup] = useState(3);
@@ -31,20 +39,21 @@ export function LinalgBenchPage() {
   const run = useCallback(() => {
     setRunning(true);
     setResults([]);
-    setProgress("Starting...");
+    setProgress("Discovering backends...");
 
     const worker = new Worker(
-      new URL("../bench/linalg-bench-worker.ts", import.meta.url),
+      new URL("../bench/matmul-bench-worker.ts", import.meta.url),
       { type: "module" }
     );
     workerRef.current = worker;
 
     worker.onmessage = (e: MessageEvent) => {
       const msg = e.data;
-      if (msg.type === "progress") {
-        setProgress(`${msg.scenarioId} [${msg.backendId}]`);
-      } else if (msg.type === "result") {
+      if (msg.type === "progress") setProgress(msg.msg);
+      else if (msg.type === "result") {
         setResults(msg.data);
+        setBackends(msg.backends);
+        setScenarios(msg.scenarios);
         setRunning(false);
         setProgress("");
         worker.terminate();
@@ -69,18 +78,21 @@ export function LinalgBenchPage() {
     setProgress("Cancelled");
   }, []);
 
-  // Group results by scenario, columns = backends
-  const backendIds = [...new Set(results.map(r => r.backendId))];
-  const byScenario = new Map<string, Map<string, BenchTimingResult>>();
+  const bids = backends.map(b => b.id);
+  const byScenario = new Map<string, Map<string, MatmulResult>>();
   for (const r of results) {
     if (!byScenario.has(r.scenarioId)) byScenario.set(r.scenarioId, new Map());
     byScenario.get(r.scenarioId)!.set(r.backendId, r);
   }
 
   return (
-    <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+    <Box sx={{ p: 3, maxWidth: 1400, mx: "auto" }}>
       <Typography variant="h4" gutterBottom>
-        Linear Algebra Benchmarks
+        Matmul (dgemm) Benchmark
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Compares pure TypeScript, FLAME-TS blocked, and WASM SIMD backends. WASM
+        also enables future multi-threading via SharedArrayBuffer.
       </Typography>
 
       <Box sx={{ display: "flex", gap: 2, mb: 2, alignItems: "center" }}>
@@ -108,7 +120,7 @@ export function LinalgBenchPage() {
           </Button>
         ) : (
           <Button variant="contained" onClick={run}>
-            Run Benchmarks
+            Run
           </Button>
         )}
         {running && <CircularProgress size={20} />}
@@ -119,32 +131,43 @@ export function LinalgBenchPage() {
         )}
       </Box>
 
+      {backends.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle2">Backends discovered:</Typography>
+          {backends.map(b => (
+            <Typography key={b.id} variant="body2" sx={{ ml: 2 }}>
+              {b.id}: {b.label}
+            </Typography>
+          ))}
+        </Box>
+      )}
+
       {results.length > 0 && (
         <TableContainer component={Paper}>
           <Table size="small">
             <TableHead>
               <TableRow>
                 <TableCell>
-                  <strong>Scenario</strong>
+                  <strong>Size</strong>
                 </TableCell>
-                {backendIds.map(bid => (
+                {bids.map(bid => (
                   <TableCell key={bid} align="right">
-                    <strong>{bid} (ms)</strong>
+                    <strong>{bid}</strong>
                   </TableCell>
                 ))}
               </TableRow>
             </TableHead>
             <TableBody>
-              {[...byScenario.entries()].map(([scenarioId, backendMap]) => {
-                const first = backendMap.values().next().value!;
+              {scenarios.map(s => {
+                const bmap = byScenario.get(s.id);
                 return (
-                  <TableRow key={scenarioId}>
-                    <TableCell>{first.scenarioLabel}</TableCell>
-                    {backendIds.map(bid => {
-                      const r = backendMap.get(bid);
+                  <TableRow key={s.id}>
+                    <TableCell>{s.label}</TableCell>
+                    {bids.map(bid => {
+                      const r = bmap?.get(bid);
                       let cell = "-";
-                      if (r?.error) cell = `ERR: ${r.error.slice(0, 30)}`;
-                      else if (r) cell = formatMs(r.medianMs);
+                      if (r?.error) cell = "ERR";
+                      else if (r) cell = fmtMs(r.medianMs);
                       return (
                         <TableCell key={bid} align="right">
                           {cell}
