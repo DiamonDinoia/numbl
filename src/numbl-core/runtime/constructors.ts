@@ -26,6 +26,34 @@ import {
   isRuntimeString,
 } from "./types.js";
 
+// Pool allocator hook — set once at startup from cli.ts.
+let _poolAlloc: ((n: number) => FloatXArrayType) | null = null;
+let _poolAllocFrom: ((source: FloatXArrayType) => FloatXArrayType) | null =
+  null;
+
+export function _setPoolAlloc(
+  alloc: ((n: number) => FloatXArrayType) | null,
+  allocFrom: ((source: FloatXArrayType) => FloatXArrayType) | null
+): void {
+  _poolAlloc = alloc;
+  _poolAllocFrom = allocFrom;
+}
+
+function allocCopy(data: number[] | FloatXArrayType): FloatXArrayType {
+  if (_poolAllocFrom && ArrayBuffer.isView(data))
+    return _poolAllocFrom(data as FloatXArrayType);
+  if (_poolAlloc) {
+    const a = _poolAlloc(data.length);
+    (a as Float64Array).set(data as number[]);
+    return a;
+  }
+  return new FloatXArray(data as number[]);
+}
+
+function allocEmpty(n: number): FloatXArrayType {
+  return _poolAlloc ? _poolAlloc(n) : new FloatXArray(n);
+}
+
 export const RTV = {
   num(value: number): RuntimeNumber {
     return value;
@@ -36,11 +64,11 @@ export const RTV = {
     shape: number[],
     imag?: FloatXArrayType | number[]
   ): RuntimeTensor {
-    const d = data instanceof FloatXArray ? data : new FloatXArray(data);
+    const d = data instanceof FloatXArray ? data : allocCopy(data);
     const im = imag
       ? imag instanceof FloatXArray
         ? imag
-        : new FloatXArray(imag)
+        : allocCopy(imag)
       : undefined;
     // Strip trailing singleton dimensions (always keeps minimum 2D)
     const s = [...shape];
@@ -60,10 +88,10 @@ export const RTV = {
 
   /** Create a row vector [1 x n] */
   row(data: number[], imag?: number[]): RuntimeTensor {
-    const im = imag ? new FloatXArray(imag) : undefined;
+    const im = imag ? allocCopy(imag) : undefined;
     return {
       kind: "tensor",
-      data: new FloatXArray(data),
+      data: allocCopy(data),
       imag: im,
       shape: [1, data.length],
       _rc: 1,
@@ -72,10 +100,10 @@ export const RTV = {
 
   /** Create a column vector [n x 1] */
   col(data: number[], imag?: number[]): RuntimeTensor {
-    const im = imag ? new FloatXArray(imag) : undefined;
+    const im = imag ? allocCopy(imag) : undefined;
     return {
       kind: "tensor",
-      data: new FloatXArray(data),
+      data: allocCopy(data),
       imag: im,
       shape: [data.length, 1],
       _rc: 1,
@@ -89,11 +117,11 @@ export const RTV = {
     data: number[] | FloatXArrayType,
     imag?: number[] | FloatXArrayType
   ): RuntimeTensor {
-    const d = data instanceof FloatXArray ? data : new FloatXArray(data);
+    const d = data instanceof FloatXArray ? data : allocCopy(data);
     const im = imag
       ? imag instanceof FloatXArray
         ? imag
-        : new FloatXArray(imag)
+        : allocCopy(imag)
       : undefined;
     return { kind: "tensor", data: d, imag: im, shape: [rows, cols], _rc: 1 };
   },
@@ -141,7 +169,7 @@ export const RTV = {
       // Default for unspecified properties is [] (empty double)
       fields.set(
         name,
-        defaults?.get(name) ?? RTV.tensor(new FloatXArray(0), [0, 0])
+        defaults?.get(name) ?? RTV.tensor(allocEmpty(0), [0, 0])
       );
     }
     return {

@@ -34,6 +34,8 @@ import { NodeFileIOAdapter } from "./cli-fileio.js";
 import { NodeSystemAdapter } from "./cli-system.js";
 
 import { executeCode } from "./numbl-core/executeCode.js";
+import { _setPoolAlloc } from "./numbl-core/runtime/constructors.js";
+import type { FloatXArrayType } from "./numbl-core/runtime/types.js";
 import { parseMFile } from "./numbl-core/parser/index.js";
 import { WorkspaceFile, NativeBridge } from "./numbl-core/workspace/types.js";
 import type { PlotInstruction } from "./graphics/types.js";
@@ -84,6 +86,24 @@ try {
   nativeBridge = { load: (path: string) => koffi.load(path) };
 } catch {
   // koffi not installed — native shared library support disabled
+}
+
+// ── Enable pool allocator if the native addon supports it ───────────────────
+
+if (nativeAddonLoaded) {
+  try {
+    const req = createRequire(import.meta.url);
+    const addon = req(addonPath);
+    if (typeof addon.poolInit === "function") {
+      addon.poolInit(true);
+      _setPoolAlloc(
+        (n: number) => addon.poolAllocFloat64(n),
+        (s: FloatXArrayType) => addon.poolAllocFloat64From(s)
+      );
+    }
+  } catch {
+    /* addon doesn't support pool — ignore */
+  }
 }
 
 // scanMFiles is in cli-scan.ts (separate module to avoid circular deps with cli-fileio)

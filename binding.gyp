@@ -16,7 +16,8 @@
         "native/lapack_qz.cpp",
         "native/lapack_fft.cpp",
         "native/lapack_fft_batch.cpp",
-        "native/elemwise.cpp"
+        "native/elemwise.cpp",
+        "native/numbl_pool.cpp"
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",

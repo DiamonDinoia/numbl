@@ -7,9 +7,13 @@
 
 #include <napi.h>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+// Pool allocator state (defined in numbl_pool.cpp)
+extern bool pool_enabled;
 
 // ── Complex number type used by LAPACK (interleaved real and imaginary parts) ─
 
@@ -204,7 +208,18 @@ inline std::vector<lapack_complex_double> splitToInterleaved(
 }
 
 // Create a new Float64Array from a std::vector<double>.
+// When pool_enabled, uses cache-line-aligned external ArrayBuffer.
 inline Napi::Float64Array vecToF64(Napi::Env env, const std::vector<double>& v) {
+  if (pool_enabled && v.size() > 0) {
+    size_t bytes = (v.size() * sizeof(double) + 63) & ~size_t(63);
+    void* ptr = aligned_alloc(64, bytes);
+    if (ptr) {
+      std::memcpy(ptr, v.data(), v.size() * sizeof(double));
+      auto ab = Napi::ArrayBuffer::New(env, ptr, v.size() * sizeof(double),
+          [](Napi::Env, void* d) { free(d); });
+      return Napi::Float64Array::New(env, v.size(), ab, 0);
+    }
+  }
   auto arr = Napi::Float64Array::New(env, v.size());
   std::memcpy(arr.Data(), v.data(), v.size() * sizeof(double));
   return arr;
@@ -212,6 +227,16 @@ inline Napi::Float64Array vecToF64(Napi::Env env, const std::vector<double>& v) 
 
 // Create a new Float64Array from raw pointer + count.
 inline Napi::Float64Array ptrToF64(Napi::Env env, const double* data, size_t n) {
+  if (pool_enabled && n > 0) {
+    size_t bytes = (n * sizeof(double) + 63) & ~size_t(63);
+    void* ptr = aligned_alloc(64, bytes);
+    if (ptr) {
+      std::memcpy(ptr, data, n * sizeof(double));
+      auto ab = Napi::ArrayBuffer::New(env, ptr, n * sizeof(double),
+          [](Napi::Env, void* d) { free(d); });
+      return Napi::Float64Array::New(env, n, ab, 0);
+    }
+  }
   auto arr = Napi::Float64Array::New(env, n);
   std::memcpy(arr.Data(), data, n * sizeof(double));
   return arr;

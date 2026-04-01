@@ -22,6 +22,12 @@
 #include "numbl_addon_common.h"
 #include <cstdlib>
 
+// Pool allocator (numbl_pool.cpp)
+extern Napi::Value PoolInit(const Napi::CallbackInfo&);
+extern Napi::Value PoolAllocFloat64(const Napi::CallbackInfo&);
+extern Napi::Value PoolAllocFloat64From(const Napi::CallbackInfo&);
+extern Napi::Value PoolEnabled(const Napi::CallbackInfo&);
+
 extern "C" {
   void openblas_set_num_threads(int num_threads);
 }
@@ -95,6 +101,15 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
               Napi::Function::New(env, Elemwise));
   exports.Set(Napi::String::New(env, "elemwiseComplex"),
               Napi::Function::New(env, ElemwiseComplex));
+  // Pool allocator
+  exports.Set(Napi::String::New(env, "poolInit"),
+              Napi::Function::New(env, PoolInit));
+  exports.Set(Napi::String::New(env, "poolAllocFloat64"),
+              Napi::Function::New(env, PoolAllocFloat64));
+  exports.Set(Napi::String::New(env, "poolAllocFloat64From"),
+              Napi::Function::New(env, PoolAllocFloat64From));
+  exports.Set(Napi::String::New(env, "poolEnabled"),
+              Napi::Function::New(env, PoolEnabled));
   return exports;
 }
 
